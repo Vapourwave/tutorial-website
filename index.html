@@ -1,30 +1,338 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-    <!-- Link to stylesheet -->
-    <!--<link rel="stylesheet" href="css/main.css">-->
+    <title>BoardRevive Interactive Experience</title>
+    <link rel="stylesheet" href="css/main.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        surface: "#F8F9FA",
+                        scratched: "#E2E8F0",
+                        neon: "#00F3FF",
+                    },
+                },
+            },
+        };
+    </script>
 </head>
-<body>
+<body class="bg-[#F8F9FA]">
+    <main id="app" aria-label="BoardRevive 3D experience"></main>
+    <div class="sr-only" aria-live="polite" id="a11y-status">
+        Drag bottle to restore whiteboard surface.
+    </div>
 
-    <section class="wrapper-main">
-        <form action="example.html" method="get">
-        <label for="firstname">Firstname</label>    
-        <br>
-        <input type="text" id="firstname" name="firstname" placeholder="Firstname">
-        <br><br>
-        <label for="message">Type something cool</label>
-        <br>
-        <textarea name="message" id="message" placeholder="Write a message..." cols="30" rows="10"></textarea>
-        </form>
-    </section>
-    <?php
-        $name = "Noel Radhakrishnan";
-    ?>
-    <p>Hi, my name is <?php echo $name ?>. And, this is my PHP website!</p>
+    <script type="module">
+        import React, { useCallback, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
+        import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+        import * as THREE from "https://esm.sh/three@0.164.1";
+        import { Canvas, useFrame, useThree } from "https://esm.sh/@react-three/fiber@8.16.8";
+        import { Environment, Html, OrbitControls } from "https://esm.sh/@react-three/drei@9.107.0";
+        import { Physics, useBox } from "https://esm.sh/@react-three/cannon@6.6.0";
 
-    
+        function Whiteboard({ bottleWorldPos }) {
+            const meshRef = useRef();
+            const matRef = useRef();
+            const scratchTex = useMemo(() => {
+                const size = 512;
+                const canvas = document.createElement("canvas");
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext("2d");
+
+                ctx.fillStyle = "#E2E8F0";
+                ctx.fillRect(0, 0, size, size);
+
+                for (let i = 0; i < 1800; i += 1) {
+                    const x = Math.random() * size;
+                    const y = Math.random() * size;
+                    const len = 10 + Math.random() * 48;
+                    const angle = Math.random() * Math.PI * 2;
+                    ctx.strokeStyle = `rgba(148,163,184,${0.1 + Math.random() * 0.18})`;
+                    ctx.lineWidth = 0.4 + Math.random() * 1.4;
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    ctx.lineTo(x + Math.cos(angle) * len, y + Math.sin(angle) * len);
+                    ctx.stroke();
+                }
+
+                for (let i = 0; i < 12000; i += 1) {
+                    const n = 220 + Math.floor(Math.random() * 30);
+                    ctx.fillStyle = `rgba(${n},${n},${n},0.06)`;
+                    const px = Math.random() * size;
+                    const py = Math.random() * size;
+                    ctx.fillRect(px, py, 1, 1);
+                }
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+                tex.repeat.set(1.4, 1.2);
+                tex.needsUpdate = true;
+                return tex;
+            }, []);
+
+            const glossTex = useMemo(() => {
+                const size = 512;
+                const canvas = document.createElement("canvas");
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext("2d");
+                const grad = ctx.createLinearGradient(0, 0, size, size);
+                grad.addColorStop(0, "#dff8ff");
+                grad.addColorStop(0.35, "#f8f9fa");
+                grad.addColorStop(0.65, "#e2faff");
+                grad.addColorStop(1, "#ffffff");
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, size, size);
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.needsUpdate = true;
+                return tex;
+            }, []);
+
+            useFrame((state, delta) => {
+                if (!matRef.current || !meshRef.current) return;
+
+                const localHit = meshRef.current.worldToLocal(bottleWorldPos.current.clone());
+                const nx = THREE.MathUtils.clamp(localHit.x / 3.4 + 0.5, 0, 1);
+                const ny = THREE.MathUtils.clamp(localHit.y / 1.9 + 0.5, 0, 1);
+
+                matRef.current.uniforms.uBrush.value.lerp(new THREE.Vector2(nx, ny), 0.2);
+                matRef.current.uniforms.uTime.value += delta;
+            });
+
+            const shader = useMemo(
+                () => ({
+                    uniforms: {
+                        uScratched: { value: scratchTex },
+                        uShine: { value: glossTex },
+                        uBrush: { value: new THREE.Vector2(0.08, 0.2) },
+                        uRadius: { value: 0.12 },
+                        uFeather: { value: 0.18 },
+                        uTime: { value: 0 },
+                    },
+                    vertexShader: `
+                        varying vec2 vUv;
+                        varying vec3 vNormal;
+                        varying vec3 vViewDir;
+                        void main() {
+                            vUv = uv;
+                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                            vNormal = normalize(normalMatrix * normal);
+                            vViewDir = normalize(-mvPosition.xyz);
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform sampler2D uScratched;
+                        uniform sampler2D uShine;
+                        uniform vec2 uBrush;
+                        uniform float uRadius;
+                        uniform float uFeather;
+                        uniform float uTime;
+                        varying vec2 vUv;
+                        varying vec3 vNormal;
+                        varying vec3 vViewDir;
+
+                        void main() {
+                            float dist = distance(vUv, uBrush);
+                            float reveal = smoothstep(uRadius + uFeather, uRadius * 0.5, dist);
+
+                            vec3 scratched = texture2D(uScratched, vUv * vec2(1.2, 1.1)).rgb;
+                            vec3 polished = texture2D(uShine, vUv + vec2(sin(uTime * 0.8 + vUv.y * 8.0) * 0.006, 0.0)).rgb;
+
+                            float fresnel = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0), 3.5);
+                            float sweep = smoothstep(0.25, 0.9, sin(uTime * 1.6 + vUv.x * 10.0) * 0.5 + 0.5);
+                            vec3 neonSpec = vec3(0.0, 0.95, 1.0) * (fresnel * 0.6 + sweep * 0.12);
+                            vec3 finalColor = mix(scratched * 0.88, polished + neonSpec, reveal);
+                            gl_FragColor = vec4(finalColor, 1.0);
+                        }
+                    `,
+                }),
+                [scratchTex, glossTex],
+            );
+
+            return (
+                <mesh ref={meshRef} position={[0, 1.55, -0.1]}>
+                    <planeGeometry args={[6.8, 3.8, 1, 1]} />
+                    <shaderMaterial ref={matRef} args={[shader]} />
+                </mesh>
+            );
+        }
+
+        function BoardReviveBottle({ bottleWorldPos }) {
+            const [hovered, setHovered] = useState(false);
+            const [dragging, setDragging] = useState(false);
+            const [bodyRef, api] = useBox(() => ({
+                args: [0.42, 1.05, 0.42],
+                mass: 1,
+                position: [1.1, 0.78, 0.45],
+                linearDamping: 0.9,
+                angularDamping: 0.9,
+            }));
+            const dragPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.8), []);
+            const raycaster = useMemo(() => new THREE.Raycaster(), []);
+            const ndc = useMemo(() => new THREE.Vector2(), []);
+            const { camera, gl } = useThree();
+
+            const moveBottle = useCallback(
+                (event) => {
+                    ndc.x = (event.clientX / gl.domElement.clientWidth) * 2 - 1;
+                    ndc.y = -(event.clientY / gl.domElement.clientHeight) * 2 + 1;
+                    raycaster.setFromCamera(ndc, camera);
+                    const target = new THREE.Vector3();
+                    raycaster.ray.intersectPlane(dragPlane, target);
+                    target.x = THREE.MathUtils.clamp(target.x, -2.8, 2.8);
+                    target.z = THREE.MathUtils.clamp(target.z, -1.6, 1.8);
+                    api.velocity.set(0, 0, 0);
+                    api.angularVelocity.set(0, 0, 0);
+                    api.position.set(target.x, 0.82, target.z);
+                    bottleWorldPos.current.copy(target);
+                },
+                [api, bottleWorldPos, camera, dragPlane, gl, ndc, raycaster],
+            );
+
+            const onPointerMove = useCallback(
+                (event) => {
+                    if (!dragging) return;
+                    moveBottle(event);
+                },
+                [dragging, moveBottle],
+            );
+
+            const endDrag = useCallback(() => {
+                setDragging(false);
+                gl.domElement.style.cursor = "grab";
+            }, [gl]);
+
+            useFrame(() => {
+                if (!bodyRef.current) return;
+                bodyRef.current.getWorldPosition(bottleWorldPos.current);
+            });
+
+            return (
+                <group>
+                    {hovered && (
+                        <pointLight
+                            color="#00F3FF"
+                            intensity={22}
+                            distance={4}
+                            decay={2}
+                            position={[1.08, 1.35, 0.48]}
+                        />
+                    )}
+                    <mesh
+                        ref={bodyRef}
+                        castShadow
+                        onPointerOver={() => {
+                            setHovered(true);
+                            gl.domElement.style.cursor = "grab";
+                        }}
+                        onPointerOut={() => {
+                            setHovered(false);
+                            if (!dragging) gl.domElement.style.cursor = "default";
+                        }}
+                        onPointerDown={(event) => {
+                            event.target.setPointerCapture(event.pointerId);
+                            setDragging(true);
+                            gl.domElement.style.cursor = "grabbing";
+                            moveBottle(event);
+                        }}
+                        onPointerMove={onPointerMove}
+                        onPointerUp={(event) => {
+                            event.target.releasePointerCapture(event.pointerId);
+                            endDrag();
+                        }}
+                    >
+                        <capsuleGeometry args={[0.18, 0.78, 12, 20]} />
+                        <meshPhysicalMaterial
+                            color="#f0fbff"
+                            roughness={0.08}
+                            metalness={0.18}
+                            transmission={0.28}
+                            thickness={0.5}
+                            clearcoat={1}
+                            clearcoatRoughness={0.1}
+                            emissive="#00323a"
+                            emissiveIntensity={hovered ? 0.22 : 0.06}
+                        />
+                        <Html position={[0, 0.88, 0]} center transform distanceFactor={10}>
+                            <div className="pointer-events-none rounded-sm border border-[#00F3FF]/40 bg-[#0a1114]/75 px-3 py-1 text-[12px] font-semibold tracking-[0.12em] uppercase text-[#00F3FF] shadow-[0_0_16px_#00F3FF66] backdrop-blur-md">
+                                user board revive
+                            </div>
+                        </Html>
+                    </mesh>
+                </group>
+            );
+        }
+
+        function Studio() {
+            const bottleWorldPos = useRef(new THREE.Vector3(1.1, 0.82, 0.45));
+            return (
+                <>
+                    <ambientLight intensity={0.32} />
+                    <directionalLight
+                        position={[4, 6, 5]}
+                        intensity={2.1}
+                        color="#ffffff"
+                        castShadow
+                        shadow-mapSize-width={1024}
+                        shadow-mapSize-height={1024}
+                    />
+                    <spotLight
+                        position={[-3, 4.4, 1.2]}
+                        intensity={25}
+                        angle={0.34}
+                        penumbra={0.45}
+                        color="#00F3FF"
+                        distance={12}
+                    />
+                    <Environment preset="studio" background blur={0.75} />
+
+                    <mesh receiveShadow position={[0, 0.46, 0]}>
+                        <boxGeometry args={[7.4, 0.18, 2.5]} />
+                        <meshStandardMaterial color="#dae3ec" roughness={0.62} metalness={0.12} />
+                    </mesh>
+
+                    <Whiteboard bottleWorldPos={bottleWorldPos} />
+
+                    <Physics gravity={[0, -9.81, 0]} allowSleep iterations={12}>
+                        <mesh receiveShadow position={[0, 0.72, 0]}>
+                            <boxGeometry args={[7.2, 0.22, 2.8]} />
+                            <meshStandardMaterial color="#d3dce6" roughness={0.75} metalness={0.18} />
+                        </mesh>
+                        <BoardReviveBottle bottleWorldPos={bottleWorldPos} />
+                    </Physics>
+
+                    <OrbitControls
+                        makeDefault
+                        target={[0, 1.4, 0]}
+                        minDistance={4.8}
+                        maxDistance={8.6}
+                        maxPolarAngle={Math.PI * 0.47}
+                    />
+                </>
+            );
+        }
+
+        function App() {
+            return (
+                <Canvas
+                    shadows
+                    camera={{ position: [0, 2.2, 6.4], fov: 42 }}
+                    gl={{ antialias: true, alpha: false }}
+                    className="h-screen w-screen bg-[#F8F9FA]"
+                >
+                    <color attach="background" args={["#F8F9FA"]} />
+                    <fog attach="fog" args={["#f3f6fa", 7, 16]} />
+                    <Studio />
+                </Canvas>
+            );
+        }
+
+        createRoot(document.getElementById("app")).render(<App />);
+    </script>
 </body>
 </html>
